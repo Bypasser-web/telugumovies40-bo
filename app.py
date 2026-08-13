@@ -1,12 +1,13 @@
 import os
 import secrets
-import asyncio
+import requests
+import threading
 from flask import Flask, render_template_string, request, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pymongo import MongoClient
 
-# Flask Setup
+# ------------------- FLASK WEB APP SETUP -------------------
 app = Flask(__name__)
 token_db = {}
 
@@ -81,6 +82,11 @@ def verify(token):
 
     return render_template_string(GRANTED_HTML, target_url=data['target_url'])
 
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
+
+# ------------------- PYROGRAM BOT SETUP -------------------
 bot = Client("svbrand_bypass_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 def get_main_markup():
@@ -128,11 +134,7 @@ async def protect_link(client, message):
         token_db[token] = {"target_url": target_link}
         verify_url = f"{WEBAPP_URL}/verify/{token}"
         
-        loop = asyncio.get_event_loop()
-        short_res = await loop.run_in_executor(
-            None, 
-            lambda: mongo_client.requests_session.get(f"https://gplinks.in/api?api={user_api}&url={verify_url}").json() if hasattr(mongo_client, 'requests_session') else __import__('requests').get(f"https://gplinks.in/api?api={user_api}&url={verify_url}").json()
-        )
+        short_res = requests.get(f"https://gplinks.in/api?api={user_api}&url={verify_url}", timeout=10).json()
         
         if short_res.get("status") == "success":
             short_url = short_res.get("shortenedUrl")
@@ -162,32 +164,11 @@ async def cb_handler(client, query: CallbackQuery):
     elif data == "btn_help":
         await query.message.reply("<b>🆘 Help Guide:</b>\n\n1. Send any Telegram storage link to get protected link.\n2. Add your own GPLinks API key using `/set_api KEY` command.")
 
-async def main():
-    import gunicorn.app.base
-
-    class StandaloneApplication(gunicorn.app.base.BaseApplication):
-        def __init__(self, app, options=None):
-            self.options = options or {}
-            self.application = app
-            super().__init__()
-
-        def load_config(self):
-            for key, value in self.options.items():
-                if key in self.cfg.settings and value is not None:
-                    self.cfg.set(key.lower(), value)
-
-        def load(self):
-            return self.application
-
-    port = int(os.environ.get("PORT", 8080))
-    options = {'bind': f'0.0.0.0:{port}', 'workers': 1}
-    
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, lambda: StandaloneApplication(app, options).run())
-    
-    await bot.start()
-    print("Bot is live!")
-    await asyncio.Event().wait()
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Start Web Server in Thread
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+    
+    # Start Telegram Bot in Main Thread
+    bot.run()
