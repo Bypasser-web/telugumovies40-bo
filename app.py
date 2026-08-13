@@ -1,23 +1,26 @@
+import sys
+import asyncio
+
+# Fix for Pyrogram import issue on newer python versions
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 import os
 import secrets
-import requests
-import threading
-from flask import Flask, render_template_string, request, jsonify
+from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pymongo import MongoClient
+import aiohttp
 
-# ------------------- FLASK WEB APP SETUP -------------------
-app = Flask(__name__)
-token_db = {}
-
-# MongoDB Setup
+# ------------------- DATABASE & CONFIG SETUP -------------------
 MONGO_URI = "mongodb+srv://teamthumbupsgaming_db_user:6I3dbGX4kNjcEXBP@vinay.pprhqmn.mongodb.net/?appName=Vinay"
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["telugumovies40_bot"]
 users_col = db["users"]
 
-# Configuration
 API_ID = 23209524
 API_HASH = "3042159268b8b90557a5e2b8ab346843"
 BOT_TOKEN = "8770337415:AAEVxe7UfMQqInJJ1RJraefastcLNPILjRM"
@@ -25,7 +28,9 @@ LOG_CHANNEL = -1004427714969
 DEFAULT_GPLINKS_KEY = "cd02492acca21d2f5aff76690e7a901d401c2799"
 WEBAPP_URL = os.getenv("RENDER_EXTERNAL_URL", "http://127.0.0.1:8080")
 
-DENIED_HTML = """<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TELUGU MOVIES 40 - Access Denied</title><style>body{background:#0f0f1a;color:#ff4d4d;font-family:sans-serif;text-align:center;padding-top:50px;}.card{background:#1a1a2e;padding:25px;border-radius:15px;border:2px solid #ff4d4d;display:inline-block;width:85%;max-width:400px;}.btn{background:#ff4d4d;color:white;padding:12px 25px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2>🎬 TELUGU MOVIES 40 🎬</h2><h1>🚫 ACCESS DENIED</h1><p>{{ reason }}</p><a href="https://t.me/Telugumovies40" class="btn">JOIN TELUGU MOVIES 40</a></div></body></html>"""
+token_db = {}
+
+DENIED_HTML = """<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TELUGU MOVIES 40 - Access Denied</title><style>body{background:#0f0f1a;color:#ff4d4d;font-family:sans-serif;text-align:center;padding-top:50px;}.card{background:#1a1a2e;padding:25px;border-radius:15px;border:2px solid #ff4d4d;display:inline-block;width:85%;max-width:400px;}.btn{background:#ff4d4d;color:white;padding:12px 25px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2>🎬 TELUGU MOVIES 40 🎬</h2><h1>🚫 ACCESS DENIED</h1><p>Automated Tool / Invalid Link Detected!</p><a href="https://t.me/Telugumovies40" class="btn">JOIN TELUGU MOVIES 40</a></div></body></html>"""
 
 GRANTED_HTML = """<!DOCTYPE html>
 <html>
@@ -45,7 +50,7 @@ GRANTED_HTML = """<!DOCTYPE html>
         <p>Verification Successful</p>
         <div class="timer-circle" id="timer">10</div>
         <p id="status">Please wait <span id="sec">10</span> seconds...</p>
-        <a href="{{ target_url }}" class="btn" id="go-btn">🚀 GET FILE LINK NOW</a>
+        <a href="{{TARGET_URL}}" class="btn" id="go-btn">🚀 GET FILE LINK NOW</a>
     </div>
     <script>
         let t = 10;
@@ -64,29 +69,24 @@ GRANTED_HTML = """<!DOCTYPE html>
 </body>
 </html>"""
 
-@app.route('/')
-def home():
-    return "TeluguMovies40 Protection Server Alive!"
+async def handle_home(request):
+    return web.Response(text="TeluguMovies40 Protection Server Alive!")
 
-@app.route('/verify/<token>')
-def verify(token):
+async def handle_verify(request):
+    token = request.match_info.get('token', '')
     data = token_db.get(token)
     user_agent = request.headers.get('User-Agent', '').lower()
-    
+
     if not data:
-        return render_template_string(DENIED_HTML, reason="Invalid or Expired Link!"), 403
-    
+        return web.Response(text=DENIED_HTML, content_type='text/html', status=403)
+
     bypasser_keywords = ['python', 'curl', 'wget', 'aiohttp', 'bot', 'scraper', 'spider']
     if any(k in user_agent for k in bypasser_keywords):
-        return render_template_string(DENIED_HTML, reason="Automated Bypasser Tool Detected! Access Blocked."), 403
+        return web.Response(text=DENIED_HTML, content_type='text/html', status=403)
 
-    return render_template_string(GRANTED_HTML, target_url=data['target_url'])
+    html = GRANTED_HTML.replace("{{TARGET_URL}}", data['target_url'])
+    return web.Response(text=html, content_type='text/html')
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
-
-# ------------------- PYROGRAM BOT SETUP -------------------
 bot = Client("svbrand_bypass_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 def get_main_markup():
@@ -133,9 +133,11 @@ async def protect_link(client, message):
         token = secrets.token_urlsafe(16)
         token_db[token] = {"target_url": target_link}
         verify_url = f"{WEBAPP_URL}/verify/{token}"
-        
-        short_res = requests.get(f"https://gplinks.in/api?api={user_api}&url={verify_url}", timeout=10).json()
-        
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://gplinks.in/api?api={user_api}&url={verify_url}") as resp:
+                short_res = await resp.json()
+
         if short_res.get("status") == "success":
             short_url = short_res.get("shortenedUrl")
             reply_text = f"<b>🎬 TELUGU MOVIES 40 PROTECTED LINK 🎬</b>\n\n<b>Original:</b> <code>{target_link}</code>\n<b>Protected Link:</b> {short_url}\n\n<i>Note: Direct bypass tools vaadithe access block avthundhi!</i>"
@@ -164,11 +166,21 @@ async def cb_handler(client, query: CallbackQuery):
     elif data == "btn_help":
         await query.message.reply("<b>🆘 Help Guide:</b>\n\n1. Send any Telegram storage link to get protected link.\n2. Add your own GPLinks API key using `/set_api KEY` command.")
 
+async def main():
+    web_app = web.Application()
+    web_app.router.add_get('/', handle_home)
+    web_app.router.add_get('/verify/{token}', handle_verify)
+
+    port = int(os.environ.get("PORT", 8080))
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
+    await bot.start()
+    print("Bot & Async Web Server Live!")
+    await asyncio.Event().wait()
+
 if __name__ == "__main__":
-    # Start Web Server in Thread
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-    
-    # Start Telegram Bot in Main Thread
-    bot.run()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
